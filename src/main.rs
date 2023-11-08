@@ -28,9 +28,14 @@ fn main() -> anyhow::Result<()> {
                 // Ask Meilisearch about the best results that corresponds
                 let mut response = ask_vector_store(&embedding, TOP_N_DOCUMENTS)?;
                 // Only keep the ones that are not too far
+                dbg!(&response.hits);
                 response
                     .hits
-                    .retain(|h| h.semantic_distance > THRESHOLD_SEMANTIC_DISTANCE);
+                    .retain(|h| h.semantic_score.unwrap() > THRESHOLD_SEMANTIC_DISTANCE);
+                eprintln!(
+                    "We kept {} documents from the semantic search",
+                    response.hits.len()
+                );
                 // Extarct the keywords from those documents and only keep the ones that are not too far
                 let keywords: Vec<_> = response
                     .hits
@@ -95,8 +100,8 @@ struct MeilisearchResponse {
 
 #[derive(Debug, Deserialize)]
 struct Hit {
-    #[serde(rename = "_semanticDistance")]
-    semantic_distance: f32,
+    #[serde(rename = "_semanticScore")]
+    semantic_score: Option<f32>,
     #[serde(flatten)]
     content: HashMap<String, Value>,
 }
@@ -117,7 +122,7 @@ fn ask_meilisearch(query: &str, limit: usize) -> anyhow::Result<MeilisearchRespo
     let response: MeilisearchResponse = ureq::post("http://localhost:7700/indexes/vec-test/search")
         .set("Content-Type", "application/json")
         .send_json(ureq::json!({
-            "query": query,
+            "q": query,
             "limit": limit,
         }))
         .unwrap()
