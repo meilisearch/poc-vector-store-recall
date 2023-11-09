@@ -1,8 +1,9 @@
 use std::{collections::HashMap, time::Duration};
 use std::{env, thread};
 
-use reedline::{DefaultPrompt, Reedline, Signal};
 use rust_bert::pipelines::keywords_extraction::{Keyword, KeywordExtractionModel};
+use rustyline::error::ReadlineError;
+use rustyline::DefaultEditor;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -13,22 +14,22 @@ const TOP_N_DOCUMENTS: usize = 4;
 
 fn main() -> anyhow::Result<()> {
     let kem = KeywordExtractionModel::new(Default::default())?;
-    let mut line_editor = Reedline::create();
-    let prompt = DefaultPrompt::new(
-        reedline::DefaultPromptSegment::Basic("> ".to_string()),
-        reedline::DefaultPromptSegment::Empty,
-    );
+
+    let mut rl = DefaultEditor::new()?;
+    if rl.load_history("history.txt").is_err() {
+        println!("No previous history.");
+    }
 
     loop {
-        let sig = line_editor.read_line(&prompt);
-        match sig {
-            Ok(Signal::Success(query)) => {
+        let readline = rl.readline(">> ");
+        match readline {
+            Ok(query) => {
+                rl.add_history_entry(query.as_str())?;
                 // Ask OpenAI the embedding of the query
                 let embedding = compute_embeddings(&query)?;
                 // Ask Meilisearch about the best results that corresponds
                 let mut response = ask_vector_store(&embedding, TOP_N_DOCUMENTS)?;
                 // Only keep the ones that are not too far
-                dbg!(&response.hits);
                 response
                     .hits
                     .retain(|h| h.semantic_score.unwrap() > THRESHOLD_SEMANTIC_DISTANCE);
@@ -51,17 +52,26 @@ fn main() -> anyhow::Result<()> {
                         keywords.join(" ")
                     })
                     .collect();
+                eprintln!("We associated {query:?} to {keywords:?}");
                 // Change the Meilisearch synonyms and associate those keywords to the current query
                 let task_uid = set_synonyms_and_wait(&query, &keywords)?;
-                eprintln!("We generated the task number {task_uid} with the synonyms.");
+                eprintln!("We generated http://localhost:7700/tasks/{task_uid} with the synonyms.");
                 // Now we can send the request to Meilisearch again, the synonyms are set.
                 let response = ask_meilisearch(&query, 10)?;
-                dbg!(response);
+                for (i, mut hit) in response.hits.into_iter().enumerate() {
+                    hit.content.remove("_vectors");
+                    println!("{i}. {hit:?}");
+                }
             }
-            Ok(Signal::CtrlD) => break,
-            x => println!("Event: {:?}", x),
+            Err(ReadlineError::Eof) => break,
+            Err(err) => {
+                eprintln!("Error: {:?}", err);
+                break;
+            }
         }
     }
+
+    rl.save_history("history.txt")?;
 
     Ok(())
 }
